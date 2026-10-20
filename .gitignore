@@ -1,25 +1,28 @@
-# Binaries for programs and plugins
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
-
-# Test binary, built with `go test -c`
 *.test
-
-# Output of the go coverage tool, specifically when used with LiteIDE
 *.out
-
-# Dependency directories
 vendor/
-
-# Goland
 .idea/.gitignore
 .idea/golang-helloworld.iml
 .idea/misc.xml
 .idea/modules.xml
 .idea/vcs.xml
-
-# Misc
 .DS_Store
+.env
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+terraform.tfvars.json
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+*.pem
+*.key

@@ -1,0 +1,6 @@
+project_id          = "YOUR_CLOUDRU_PROJECT_ID"
+auth_key_id         = "YOUR_SERVICE_ACCOUNT_KEY_ID"
+auth_secret         = "YOUR_SERVICE_ACCOUNT_KEY_SECRET"
+ssh_public_key_path = "C:/Users/YOUR_NAME/.ssh/diplom-evolution.pub"
+ssh_source_cidr     = "0.0.0.0/0"
+flavor              = "gen-2-4"

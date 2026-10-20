@@ -1,7 +1,5 @@
-module github.com/hackersandslackers/golang-helloworld
+module github.com/IslamKkk/golang-helloworld
 
-go 1.14
+go 1.27.0
 
-require (
-	github.com/gorilla/mux v1.8.0
-)
+toolchain go1.27.3

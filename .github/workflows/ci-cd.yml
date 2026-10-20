@@ -1,0 +1,122 @@
+name: CI/CD
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v5
+
+      - name: Install Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+
+      - name: Run Go linter
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.14.0
+
+      - name: Run static analysis
+        run: go vet ./...
+
+      - name: Run unit tests
+        run: go test ./...
+
+      - name: Build binary artifact
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags="-s -w" -o dist/diploma-service .
+
+      - name: Build container image
+        run: |
+          docker build --build-arg APP_VERSION="${GITHUB_SHA}" -t "diploma-app:${GITHUB_SHA}" .
+          docker save "diploma-app:${GITHUB_SHA}" --output dist/diploma-app.tar
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: go-binary
+          path: dist/diploma-service
+          retention-days: 14
+
+      - name: Upload container image artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: container-image
+          path: dist/diploma-app.tar
+          retention-days: 14
+
+      - name: Check deployment secrets
+        id: deployment
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+        run: |
+          if [ -z "$DEPLOY_HOST" ] && [ -z "$DEPLOY_SSH_PRIVATE_KEY" ] && [ -z "$GRAFANA_ADMIN_PASSWORD" ]; then
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "Deployment is skipped until the VM and GitHub secrets are configured"
+            exit 0
+          fi
+          test -n "$DEPLOY_HOST"
+          test -n "$DEPLOY_SSH_PRIVATE_KEY"
+          test -n "$GRAFANA_ADMIN_PASSWORD"
+          echo "deploy=true" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare SSH connection
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') && steps.deployment.outputs.deploy == 'true'
+        env:
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+        run: |
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+
+      - name: Copy deployment files
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') && steps.deployment.outputs.deploy == 'true'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+        run: |
+          printf 'APP_VERSION=%s\nGRAFANA_ADMIN_PASSWORD=%s\n' "$GITHUB_SHA" "$GRAFANA_ADMIN_PASSWORD" > dist/.env
+          ssh -i "$HOME/.ssh/id_ed25519" -o StrictHostKeyChecking=accept-new "ubuntu@${DEPLOY_HOST}" 'sudo mkdir -p /opt/diploma/monitoring/grafana/provisioning/datasources /opt/diploma/monitoring/grafana/provisioning/dashboards/files && sudo chown -R ubuntu:ubuntu /opt/diploma'
+          scp -i "$HOME/.ssh/id_ed25519" -o StrictHostKeyChecking=accept-new dist/diploma-app.tar dist/.env compose.yaml "ubuntu@${DEPLOY_HOST}:/opt/diploma/"
+          scp -i "$HOME/.ssh/id_ed25519" -o StrictHostKeyChecking=accept-new monitoring/prometheus.yml "ubuntu@${DEPLOY_HOST}:/opt/diploma/monitoring/"
+          scp -i "$HOME/.ssh/id_ed25519" -o StrictHostKeyChecking=accept-new monitoring/grafana/provisioning/datasources/prometheus.yml "ubuntu@${DEPLOY_HOST}:/opt/diploma/monitoring/grafana/provisioning/datasources/"
+          scp -i "$HOME/.ssh/id_ed25519" -o StrictHostKeyChecking=accept-new monitoring/grafana/provisioning/dashboards/dashboards.yml "ubuntu@${DEPLOY_HOST}:/opt/diploma/monitoring/grafana/provisioning/dashboards/"
+          scp -i "$HOME/.ssh/id_ed25519" -o StrictHostKeyChecking=accept-new monitoring/grafana/provisioning/dashboards/files/diploma.json "ubuntu@${DEPLOY_HOST}:/opt/diploma/monitoring/grafana/provisioning/dashboards/files/"
+
+      - name: Deploy application and monitoring
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') && steps.deployment.outputs.deploy == 'true'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          ssh -i "$HOME/.ssh/id_ed25519" -o StrictHostKeyChecking=accept-new "ubuntu@${DEPLOY_HOST}" 'for attempt in $(seq 1 60); do if command -v docker >/dev/null 2>&1 && sudo systemctl is-active --quiet docker; then break; fi; sleep 5; done; command -v docker >/dev/null 2>&1 && sudo systemctl is-active --quiet docker && cd /opt/diploma && docker load --input diploma-app.tar && docker compose --env-file .env --file compose.yaml up --detach --remove-orphans && for attempt in $(seq 1 30); do if curl --fail --silent --show-error http://127.0.0.1/healthz; then exit 0; fi; sleep 2; done; exit 1'
+
+      - name: Send Telegram notification
+        if: always()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PIPELINE_RESULT: ${{ job.status }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "Telegram notification secrets are not configured"
+            exit 0
+          fi
+          message=$(printf 'Diploma CI/CD: %s\nRepository: %s\nRef: %s\nRun: %s/%s/actions/runs/%s' "$PIPELINE_RESULT" "$GITHUB_REPOSITORY" "$GITHUB_REF" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
+          curl --fail --silent --show-error --request POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" --data-urlencode "text=${message}"

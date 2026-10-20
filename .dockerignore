@@ -1,0 +1,16 @@
+.git
+.github
+.idea
+infra
+monitoring
+.env
+.env.*
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+terraform.tfvars.json
+*.pem
+*.key
+README.md
+LICENSE
+renovate.json
