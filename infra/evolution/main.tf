@@ -77,7 +77,7 @@ resource "cloudru_evolution_compute_subnet" "diploma" {
   project_id = var.project_id
   name       = "diploma-subnet"
 
-  zone_identifier = {
+  zone = {
     name = var.zone
   }
 
@@ -96,7 +96,7 @@ resource "cloudru_evolution_compute_security_group" "diploma" {
   project_id = var.project_id
   name       = "diploma-security-group"
 
-  zone_identifier = {
+  zone = {
     name = var.zone
   }
 
@@ -148,43 +148,48 @@ resource "cloudru_evolution_compute_disk" "diploma" {
   name       = "diploma-boot-disk"
   size       = 30
 
-  zone_identifier = {
+  zone = {
     name = var.zone
   }
 
-  disk_type_identifier = {
+  disk_type = {
     name = "SSD"
   }
 
   description = "Boot disk for the diploma VM"
   bootable    = true
-  image_id    = [for image in data.cloudru_evolution_compute_image_collection.ubuntu.images : image.id if image.name == "ubuntu-22.04"][0]
-  encrypted   = false
-  readonly    = false
-  shared      = false
+  image = {
+    id = [for image in data.cloudru_evolution_compute_image_collection.ubuntu.images : image.id if image.name == "ubuntu-22.04"][0]
+  }
+  encrypted = false
+  readonly  = false
+  shared    = false
+}
+
+resource "cloudru_evolution_compute_external_ip" "diploma" {
+  project_id = var.project_id
+  name       = "diploma-public-ip"
+  zone = {
+    name = var.zone
+  }
+  description = "Public address for the diploma service"
 }
 
 resource "cloudru_evolution_compute_interface" "diploma" {
   project_id = var.project_id
   name       = "diploma-interface"
 
-  zone_identifier = {
+  zone = {
     name = var.zone
   }
 
   description                = "Network interface for the diploma VM"
-  subnet_id                  = cloudru_evolution_compute_subnet.diploma.id
+  subnet                     = { id = cloudru_evolution_compute_subnet.diploma.id }
   interface_security_enabled = true
 
-  security_groups_identifiers = {
-    value = [{
-      id = cloudru_evolution_compute_security_group.diploma.id
-    }]
-  }
+  security_groups = [{ id = cloudru_evolution_compute_security_group.diploma.id }]
 
-  external_ip_specs = {
-    new_external_ip = true
-  }
+  attach_external_ip = { id = cloudru_evolution_compute_external_ip.diploma.id }
 
   type = "INTERFACE_TYPE_REGULAR"
 }
@@ -193,22 +198,18 @@ resource "cloudru_evolution_compute_vm" "diploma" {
   project_id = var.project_id
   name       = local.vm_name
 
-  zone_identifier = {
+  zone = {
     name = var.zone
   }
 
-  flavor_identifier = {
-    name = var.flavor
-  }
+  flavor = { name = var.flavor }
 
   description = "Go service diploma demo with CI/CD and monitoring"
 
-  disk_identifiers = [{
-    disk_id = cloudru_evolution_compute_disk.diploma.id
-  }]
+  disks = [{ id = cloudru_evolution_compute_disk.diploma.id }]
 
   network_interfaces = [{
-    interface_id = cloudru_evolution_compute_interface.diploma.id
+    id = cloudru_evolution_compute_interface.diploma.id
   }]
 
   cloud_init_userdata = base64encode(local.cloud_config)
@@ -223,5 +224,5 @@ output "vm_internal_ip" {
 }
 
 output "external_ip" {
-  value = cloudru_evolution_compute_interface.diploma.external_ip.ip_address
+  value = cloudru_evolution_compute_external_ip.diploma.ip_address
 }
