@@ -49,7 +49,7 @@ $env:TF_CLI_CONFIG_FILE = (Join-Path (Get-Location) 'infra/evolution/terraform.r
 & "$env:LOCALAPPDATA\Programs\Terraform\terraform.exe" -chdir=infra/evolution plan
 ```
 
-Terraform provider: `cloudru/cloud` 2.1.5. `infra/evolution/deploy.ps1` currently invokes `terraform` by command name, so it needs Terraform on `PATH` or adjustment to use the host's installed executable.
+Terraform provider: `cloudru/cloud` 2.1.5. `infra/evolution/deploy.ps1` uses Terraform from `PATH` when available and falls back to the standard local installation under `%LOCALAPPDATA%\Programs\Terraform`.
 
 ## CI/CD behavior
 
