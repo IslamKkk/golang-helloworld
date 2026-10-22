@@ -10,10 +10,13 @@ The diploma brief defines project requirements. Treat it as requirements for the
 
 - `main.go`, `main_test.go`: Go service and unit tests. Routes: `/`, `/healthz`, `/metrics`.
 - `Dockerfile`, `compose.yaml`: container build and app/monitoring stack.
+- `Jenkinsfile`, `jenkins/Dockerfile`: Jenkins CI pipeline and controller image.
+- `k8s/app.yaml`: Go replicas, NGINX reverse proxy, and node-local HTTP entry point.
 - `monitoring/`: Prometheus scrape config and Grafana provisioning/dashboard.
 - `.github/workflows/ci-cd.yml`: CI checks and conditional deployment from `main` or `master`.
 - `infra/evolution/main.tf`: Cloud.ru Evolution resources and outputs.
 - `infra/evolution/cloud-init.yaml.tpl`: VM bootstrap (Docker, Compose, SSH key, password SSH disabled).
+- `infra/evolution/k3s-cloud-init.yaml.tpl`: optional private K3s node bootstrap.
 - `infra/evolution/deploy.ps1`, `terraform.rc`: Terraform initialization and interactive deployment wrapper/provider mirror.
 - `infra/evolution/terraform.tfvars.example`: safe template only; real values belong in ignored `terraform.tfvars`.
 - `README.md`, `infra/evolution/README.md`: user setup and operating instructions.
@@ -53,7 +56,7 @@ Terraform provider: `cloudru/cloud` 2.1.5. `infra/evolution/deploy.ps1` uses Ter
 
 ## CI/CD behavior
 
-GitHub Actions runs on pushes and pull requests. The workflow checks `gofmt`, `golangci-lint`, `go vet`, unit tests, builds a Go binary and Docker image, and uploads both artifacts. A push to `main` or `master` deploys only when `DEPLOY_HOST`, `DEPLOY_SSH_PRIVATE_KEY`, and `GRAFANA_ADMIN_PASSWORD` are all configured. Telegram notification is optional and needs `TELEGRAM_BOT_TOKEN` plus `TELEGRAM_CHAT_ID`.
+GitHub Actions runs on pushes and pull requests. The workflow checks `gofmt`, `golangci-lint`, `go vet`, unit tests, builds a Go binary and Docker image, and uploads both artifacts. Pushes also publish a container image to GHCR. A push to `main` or `master` deploys Compose only when `DEPLOY_HOST`, `DEPLOY_SSH_PRIVATE_KEY`, and `GRAFANA_ADMIN_PASSWORD` are all configured. K3s deployment is additionally enabled when the repository variable `K3S_SERVER_IP` is set. Telegram notification is optional and needs `TELEGRAM_BOT_TOKEN` plus `TELEGRAM_CHAT_ID`.
 
 Grafana is bound to loopback on the VM and should be accessed through an SSH tunnel. Prometheus and Node Exporter are not exposed by the VM security group.
 

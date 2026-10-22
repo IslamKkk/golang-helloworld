@@ -44,6 +44,20 @@ services:
     networks:
       - diploma
 
+  jenkins:
+    build:
+      context: ./jenkins
+    image: jenkins-controller:local
+    restart: unless-stopped
+    environment:
+      JAVA_OPTS: -Xms256m -Xmx768m
+    ports:
+      - "127.0.0.1:8081:8080"
+    volumes:
+      - jenkins-data:/var/jenkins_home
+    networks:
+      - diploma
+
   node-exporter:
     image: prom/node-exporter:v1.12.1
     restart: unless-stopped
@@ -61,3 +75,4 @@ networks:
 volumes:
   prometheus-data:
   grafana-data:
+  jenkins-data:

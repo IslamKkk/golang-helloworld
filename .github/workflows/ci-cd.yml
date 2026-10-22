@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  packages: write
 
 jobs:
   pipeline:
@@ -43,6 +44,16 @@ jobs:
         run: |
           docker build --build-arg APP_VERSION="${GITHUB_SHA}" -t "diploma-app:${GITHUB_SHA}" .
           docker save "diploma-app:${GITHUB_SHA}" --output dist/diploma-app.tar
+
+      - name: Publish container image
+        if: github.event_name == 'push'
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          image="ghcr.io/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker tag "diploma-app:${GITHUB_SHA}" "${image}:${GITHUB_SHA}"
+          docker push "${image}:${GITHUB_SHA}"
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v7
@@ -93,8 +104,9 @@ jobs:
           GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
         run: |
           printf 'APP_VERSION=%s\nGRAFANA_ADMIN_PASSWORD=%s\n' "$GITHUB_SHA" "$GRAFANA_ADMIN_PASSWORD" > dist/.env
-          ssh -i "$HOME/.ssh/id_ed25519" -o StrictHostKeyChecking=accept-new "ubuntu@${DEPLOY_HOST}" 'sudo mkdir -p /opt/diploma/monitoring/grafana/provisioning/datasources /opt/diploma/monitoring/grafana/provisioning/dashboards/files && sudo chown -R ubuntu:ubuntu /opt/diploma'
+          ssh -i "$HOME/.ssh/id_ed25519" -o StrictHostKeyChecking=accept-new "ubuntu@${DEPLOY_HOST}" 'sudo mkdir -p /opt/diploma/monitoring/grafana/provisioning/datasources /opt/diploma/monitoring/grafana/provisioning/dashboards/files /opt/diploma/jenkins && sudo chown -R ubuntu:ubuntu /opt/diploma'
           scp -i "$HOME/.ssh/id_ed25519" -o StrictHostKeyChecking=accept-new dist/diploma-app.tar dist/.env compose.yaml "ubuntu@${DEPLOY_HOST}:/opt/diploma/"
+          scp -i "$HOME/.ssh/id_ed25519" -o StrictHostKeyChecking=accept-new jenkins/Dockerfile "ubuntu@${DEPLOY_HOST}:/opt/diploma/jenkins/"
           scp -i "$HOME/.ssh/id_ed25519" -o StrictHostKeyChecking=accept-new monitoring/prometheus.yml "ubuntu@${DEPLOY_HOST}:/opt/diploma/monitoring/"
           scp -i "$HOME/.ssh/id_ed25519" -o StrictHostKeyChecking=accept-new monitoring/grafana/provisioning/datasources/prometheus.yml "ubuntu@${DEPLOY_HOST}:/opt/diploma/monitoring/grafana/provisioning/datasources/"
           scp -i "$HOME/.ssh/id_ed25519" -o StrictHostKeyChecking=accept-new monitoring/grafana/provisioning/dashboards/dashboards.yml "ubuntu@${DEPLOY_HOST}:/opt/diploma/monitoring/grafana/provisioning/dashboards/"
@@ -107,6 +119,48 @@ jobs:
         run: |
           ssh -i "$HOME/.ssh/id_ed25519" -o StrictHostKeyChecking=accept-new "ubuntu@${DEPLOY_HOST}" 'for attempt in $(seq 1 60); do if command -v docker >/dev/null 2>&1 && sudo systemctl is-active --quiet docker; then break; fi; sleep 5; done; command -v docker >/dev/null 2>&1 && sudo systemctl is-active --quiet docker && cd /opt/diploma && docker load --input diploma-app.tar && docker compose --env-file .env --file compose.yaml up --detach --remove-orphans && for attempt in $(seq 1 30); do if curl --fail --silent --show-error http://127.0.0.1/healthz; then exit 0; fi; sleep 2; done; exit 1'
 
+      - name: Configure K3s SSH route
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') && steps.deployment.outputs.deploy == 'true' && vars.K3S_SERVER_IP != '' && vars.K3S_WORKER_IP != ''
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          K3S_SERVER_IP: ${{ vars.K3S_SERVER_IP }}
+          K3S_WORKER_IP: ${{ vars.K3S_WORKER_IP }}
+        run: |
+          cat > "$HOME/.ssh/config" <<EOF
+          Host project-bastion
+            HostName ${DEPLOY_HOST}
+            User ubuntu
+            IdentityFile ~/.ssh/id_ed25519
+            StrictHostKeyChecking accept-new
+          Host project-k3s-server
+            HostName ${K3S_SERVER_IP}
+            User ubuntu
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyJump project-bastion
+            StrictHostKeyChecking accept-new
+          Host project-k3s-worker
+            HostName ${K3S_WORKER_IP}
+            User ubuntu
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyJump project-bastion
+            StrictHostKeyChecking accept-new
+          EOF
+          chmod 600 "$HOME/.ssh/config"
+
+      - name: Deploy to K3s
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') && steps.deployment.outputs.deploy == 'true' && vars.K3S_SERVER_IP != '' && vars.K3S_WORKER_IP != ''
+        env:
+          K3S_SERVER_IP: ${{ vars.K3S_SERVER_IP }}
+          K3S_WORKER_IP: ${{ vars.K3S_WORKER_IP }}
+        run: |
+          image="diploma-app:${GITHUB_SHA}"
+          sed "s|image: ghcr.io/islamkkk/golang-helloworld:latest|image: ${image}|" k8s/app.yaml > dist/k8s-app.yaml
+          scp dist/diploma-app.tar dist/k8s-app.yaml project-k3s-server:/tmp/
+          scp dist/diploma-app.tar project-k3s-worker:/tmp/
+          ssh project-k3s-server 'sudo k3s ctr images import /tmp/diploma-app.tar'
+          ssh project-k3s-worker 'sudo k3s ctr images import /tmp/diploma-app.tar'
+          ssh project-k3s-server 'sudo k3s kubectl apply -f /tmp/k8s-app.yaml && sudo k3s kubectl rollout status deployment/go-service -n helloworld --timeout=180s'
+
       - name: Send Telegram notification
         if: always()
         env:
@@ -118,5 +172,5 @@ jobs:
             echo "Telegram notification secrets are not configured"
             exit 0
           fi
-          message=$(printf 'Diploma CI/CD: %s\nRepository: %s\nRef: %s\nRun: %s/%s/actions/runs/%s' "$PIPELINE_RESULT" "$GITHUB_REPOSITORY" "$GITHUB_REF" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
+          message=$(printf 'Project CI/CD: %s\nRepository: %s\nRef: %s\nRun: %s/%s/actions/runs/%s' "$PIPELINE_RESULT" "$GITHUB_REPOSITORY" "$GITHUB_REF" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")
           curl --fail --silent --show-error --request POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" --data-urlencode "text=${message}"
